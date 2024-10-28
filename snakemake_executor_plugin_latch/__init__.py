@@ -16,24 +16,6 @@ from snakemake_interface_executor_plugins.settings import (
 )
 from snakemake_interface_executor_plugins.workflow import WorkflowExecutorInterface
 
-
-# Optional:
-# Define additional settings for your executor.
-# They will occur in the Snakemake CLI as --<executor-name>-<param-name>
-# Omit this class if you don't need any.
-# Make sure that all defined fields are Optional and specify a default value
-# of None or anything else that makes sense in your case.
-@dataclass
-class ExecutorSettings(ExecutorSettingsBase):
-    pvc_name: str = field(
-        default="",
-        metadata={
-            "help": "The PVC for the shared workdir",
-            "required": True,
-        },
-    )
-
-
 # Required:
 # Specify common settings shared by various executors.
 common_settings = CommonSettings(
@@ -105,7 +87,7 @@ class Executor(RemoteExecutor):
             auth_header = f"Latch-Execution-Token {token}"
 
         if auth_header is None:
-            token_path = Path.home() / ".latch" / "dev-token"
+            token_path = Path.home() / ".latch" / "token"
             if token_path.exists():
                 auth_header = f"Latch-SDK-Token {token_path.read_text().strip()}"
 
@@ -115,8 +97,6 @@ class Executor(RemoteExecutor):
             )
 
         domain = os.environ.get("LATCH_SDK_DOMAIN", "latch.bio")
-        domain = "ligma.ai"
-
         url = f"https://vacuole.{domain}/graphql"
 
         self.sync_gql_session = gql.Client(
