@@ -1,0 +1,21 @@
+[tool.poetry]
+name = "snakemake-executor-plugin-latch"
+version = "0.1.0"
+description = ""
+authors = ["Ayush Kamat <ayush@latch.bio>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = ">=3.11,<3.12"
+gql = "^3.5.0"
+python-dateutil = "^2.9.0.post0"
+requests-toolbelt = "^1.0.0"
+snakemake-interface-executor-plugins = "^9.3.2"
+aiohttp = "^3.10.10"
+
+[tool.poetry.group.dev.dependencies]
+ruff = "^0.7.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
