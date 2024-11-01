@@ -1,7 +1,6 @@
 import os
-from dataclasses import dataclass, field
 from pathlib import Path
-from typing import AsyncGenerator, Generator, List, Optional
+from typing import AsyncGenerator, List, Optional, Set, cast
 
 import gql
 from gql.transport.aiohttp import AIOHTTPTransport
@@ -9,12 +8,7 @@ from gql.transport.requests import RequestsHTTPTransport
 from snakemake_interface_executor_plugins.executors.base import SubmittedJobInfo
 from snakemake_interface_executor_plugins.executors.remote import RemoteExecutor
 from snakemake_interface_executor_plugins.jobs import JobExecutorInterface
-from snakemake_interface_executor_plugins.logging import LoggerExecutorInterface
-from snakemake_interface_executor_plugins.settings import (
-    CommonSettings,
-    ExecutorSettingsBase,
-)
-from snakemake_interface_executor_plugins.workflow import WorkflowExecutorInterface
+from snakemake_interface_executor_plugins.settings import CommonSettings
 
 # Required:
 # Specify common settings shared by various executors.
@@ -51,14 +45,6 @@ class AuthenticationError(RuntimeError): ...
 # Required:
 # Implementation of your executor
 class Executor(RemoteExecutor):
-    def _get_execution_token(self):
-        token = os.environ.get("FLYTE_INTERNAL_EXECUTION_ID", "")
-        token = "f48a8b3ccaeba488cb35"
-        if token == "":
-            raise RuntimeError("unable to get current execution token")
-
-        return token
-
     def __post_init__(self):
         # access workflow
         # self.workflow
@@ -82,19 +68,13 @@ class Executor(RemoteExecutor):
         # In case of errors outside of jobs, please raise a WorkflowError
         auth_header: Optional[str] = None
 
-        token = os.environ.get("FLYTE_INTERNAL_EXECUTION_ID", "")
-        if token != "":
-            auth_header = f"Latch-Execution-Token {token}"
-
-        if auth_header is None:
-            token_path = Path.home() / ".latch" / "token"
-            if token_path.exists():
-                auth_header = f"Latch-SDK-Token {token_path.read_text().strip()}"
-
-        if auth_header is None:
+        self.execution_token = os.environ.get("FLYTE_INTERNAL_EXECUTION_ID", "")
+        if self.execution_token == "":
             raise AuthenticationError(
                 "Unable to find credentials to connect to gql server, aborting"
             )
+
+        auth_header = f"Latch-Execution-Token {self.execution_token}"
 
         domain = os.environ.get("LATCH_SDK_DOMAIN", "latch.bio")
         url = f"https://vacuole.{domain}/graphql"
@@ -124,8 +104,6 @@ class Executor(RemoteExecutor):
 
         rule = next(x for x in job.rules)
 
-        token = self._get_execution_token()
-
         command = ["/bin/bash", "-c", self.format_job_exec(job)]
 
         image = job.resources.get("container")
@@ -150,6 +128,10 @@ class Executor(RemoteExecutor):
                 f"{rule} - {job.jobid}: rule that requests gpus must also specify a gpu type"
             )
 
+        upstream: Set[int] = set()
+        for dep in self.dag.dependencies[job]:
+            upstream.add(dep.jobid)
+
         self.sync_gql_session.execute(
             gql.gql(
                 """
@@ -164,8 +146,9 @@ class Executor(RemoteExecutor):
                     $argEphemeralStorageLimitBytes: BigInt!
                     $argGpuLimit: BigInt!
                     $argGpuType: String
+                    $argParentJobIds: [BigInt!]!
                 ) {
-                    smCreateJobInfo(
+                    smCreateJob(
                         input: {
                             argExecutionToken: $argExecutionToken
                             argRule: $argRule
@@ -177,6 +160,7 @@ class Executor(RemoteExecutor):
                             argEphemeralStorageLimitBytes: $argEphemeralStorageLimitBytes
                             argGpuLimit: $argGpuLimit
                             argGpuType: $argGpuType
+                            argParentJobIds: $argParentJobIds
                         }
                     ) {
                         clientMutationId
@@ -185,7 +169,7 @@ class Executor(RemoteExecutor):
                 """
             ),
             {
-                "argExecutionToken": token,
+                "argExecutionToken": self.execution_token,
                 "argRule": rule,
                 "argJobId": job.jobid,
                 "argCommand": command,
@@ -195,6 +179,7 @@ class Executor(RemoteExecutor):
                 "argEphemeralStorageLimitBytes": disk,
                 "argGpuLimit": gpus,
                 "argGpuType": gpu_type,
+                "argParentJobIds": list(upstream),
             },
         )
 
@@ -226,8 +211,6 @@ class Executor(RemoteExecutor):
         # To modify the time until the next call of this method,
         # you can set self.next_sleep_seconds here.
 
-        token = self._get_execution_token()
-
         job_infos_by_id = {x.job.jobid: x for x in active_jobs}
 
         statuses = (
@@ -249,7 +232,7 @@ class Executor(RemoteExecutor):
                     """
                 ),
                 {
-                    "argExecutionToken": token,
+                    "argExecutionToken": self.execution_token,
                     "argJobIds": [x.job.jobid for x in active_jobs],
                 },
             )
