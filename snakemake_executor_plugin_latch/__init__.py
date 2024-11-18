@@ -1,6 +1,6 @@
 import os
-from pathlib import Path
-from typing import AsyncGenerator, List, Optional, Set, cast
+import re
+from typing import AsyncGenerator, List, Optional, Set
 
 import gql
 from gql.transport.aiohttp import AIOHTTPTransport
@@ -40,6 +40,17 @@ common_settings = CommonSettings(
 
 
 class AuthenticationError(RuntimeError): ...
+
+
+expr = re.compile(r"^(([a-zA-Z]+)://)?(?P<uri>[^/]+.*)$")
+
+
+def sanitize_image_name(image: str) -> str:
+    match = expr.match(image)
+    if match is None:
+        raise ValueError(f"malformed image name: {image}")
+
+    return match["uri"]
 
 
 # Required:
@@ -106,7 +117,9 @@ class Executor(RemoteExecutor):
 
         command = ["/bin/bash", "-c", self.format_job_exec(job)]
 
-        image = job.resources.get("container")
+        image: Optional[str] = getattr(job, "container_img_url")
+        if image is None:
+            image = job.resources.get("container")
         if image is None:
             image = getattr(self.workflow.remote_execution_settings, "container_image")
         if image is None:
@@ -114,11 +127,13 @@ class Executor(RemoteExecutor):
                 f"{rule} - {job.jobid}: rule must have a container image configured to run on latch"
             )
 
+        image = sanitize_image_name(image)
+
         cpu = int(float(job.resources["_cores"]) * 1000)
         # default 512 MiB
-        ram = int(float(job.resources.get("mem_mb", 512)) * 1024 * 1024)
+        ram = int(float(job.resources.get("mem_mib", 512)) * 1024 * 1024)
         # default 512 GiB
-        disk = int(float(job.resources.get("disk_mb", 512 * 1024)) * 1024 * 1024)
+        disk = int(float(job.resources.get("disk_mib", 512 * 1024)) * 1024 * 1024)
 
         gpus = int(job.resources.get("gpu", 0))
         gpu_type = job.resources.get("gpu_type")
@@ -188,7 +203,6 @@ class Executor(RemoteExecutor):
     async def check_active_jobs(
         self, active_jobs: List[SubmittedJobInfo]
     ) -> AsyncGenerator[SubmittedJobInfo, None]:
-
         # Check the status of active jobs.
 
         # You have to iterate over the given list active_jobs.
