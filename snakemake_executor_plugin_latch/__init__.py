@@ -1,3 +1,4 @@
+import json
 import os
 import re
 from typing import AsyncGenerator, List, Optional, Set
@@ -115,7 +116,11 @@ class Executor(RemoteExecutor):
 
         rule = next(x for x in job.rules)
 
-        command = ["/bin/bash", "-c", self.format_job_exec(job)]
+        job_exec = self.format_job_exec(job)
+
+        # strip leading python3 -m bc path to python is absolute in the runtime task and not
+        # necessarily available to the job machine
+        command = job_exec.split()[2:]
 
         image: Optional[str] = getattr(job, "container_img_url")
         if image is None:
@@ -162,6 +167,7 @@ class Executor(RemoteExecutor):
                     $argGpuLimit: BigInt!
                     $argGpuType: String
                     $argParentJobIds: [BigInt!]!
+                    $argAttempt: BigInt!
                 ) {
                     smCreateJob(
                         input: {
@@ -176,6 +182,7 @@ class Executor(RemoteExecutor):
                             argGpuLimit: $argGpuLimit
                             argGpuType: $argGpuType
                             argParentJobIds: $argParentJobIds
+                            argAttempt: $argAttempt
                         }
                     ) {
                         clientMutationId
@@ -195,6 +202,7 @@ class Executor(RemoteExecutor):
                 "argGpuLimit": gpus,
                 "argGpuType": gpu_type,
                 "argParentJobIds": list(upstream),
+                "argAttempt": job.attempt,
             },
         )
 
@@ -238,8 +246,10 @@ class Executor(RemoteExecutor):
                         ) {
                             nodes {
                                 jobId
-                                status
-                                errorMessage
+                                latestExecution {
+                                    status
+                                    errorMessage
+                                }
                             }
                         }
                     }
@@ -253,17 +263,42 @@ class Executor(RemoteExecutor):
         )["smMultiGetJobInfos"]
 
         for node in statuses["nodes"]:
-            status = node["status"]
+            exec = node["latestExecution"]
+            status = exec["status"]
+
             job_info = job_infos_by_id[int(node["jobId"])]
 
             if status in {"SUCCEEDED", "SKIPPED"}:
                 self.report_job_success(job_info)
             elif status in {"FAILED", "ABORTED"}:
-                self.report_job_error(job_info, node["errorMessage"])
+                self.report_job_error(job_info, exec["errorMessage"])
             else:
                 yield job_info
 
     def cancel_jobs(self, active_jobs: List[SubmittedJobInfo]):
         # Cancel all active jobs.
         # This method is called when Snakemake is interrupted.
-        return
+        job_ids = []
+        for job_info in active_jobs:
+            job_ids.append(job_info.job.jobid)
+
+        self.sync_gql_session.execute(
+            gql.gql(
+                """
+                mutation CancelJobs($argJobIds: [BigInt!]!, $argExecutionToken: String = "") {
+                    smMultiCancelJobs(
+                        input: {
+                            argJobIds: $argJobIds
+                            argExecutionToken: $argExecutionToken
+                        }
+                    ) {
+                        clientMutationId
+                    }
+                }
+                """,
+                {
+                    "argJobIds": job_ids,
+                    "argExecutionToken": self.execution_token,
+                },
+            )
+        )
