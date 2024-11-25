@@ -1,0 +1,67 @@
+SAMPLES = ["A", "B"]
+
+base = "data"
+results = "results"
+
+
+rule all:
+    input:
+        f"{results}/plots/quals.svg",
+
+
+rule bwa_map:
+    threads: 8
+    resources:
+        mem_mb=16 * 1024,
+        container="ubuntu:22.04",
+    input:
+        f"{base}/data/samples/{{sample}}.fastq",
+        f"{base}/genome/genome.fa",
+        f"{base}/genome/genome.fa.amb",
+        f"{base}/genome/genome.fa.ann",
+        f"{base}/genome/genome.fa.bwt",
+        f"{base}/genome/genome.fa.fai",
+        f"{base}/genome/genome.fa.pac",
+        f"{base}/genome/genome.fa.sa",
+    output:
+        f"{results}/mapped_reads/{{sample}}.bam",
+    shell:
+        f"mkdir -p {results}/mapped_reads && touch {results}/mapped_reads/{{wildcards.sample}}.bam"
+
+
+rule samtools_sort:
+    input:
+        f"{results}/mapped_reads/{{sample}}.bam",
+    output:
+        f"{results}/sorted_reads/{{sample}}.bam",
+    shell:
+        f"mkdir -p {results}/sorted_reads && touch {results}/sorted_reads/{{wildcards.sample}}.bam"
+
+
+rule samtools_index:
+    input:
+        f"{results}/sorted_reads/{{sample}}.bam",
+    output:
+        f"{results}/sorted_reads/{{sample}}.bam.bai",
+    shell:
+        f"touch {results}/sorted_reads/{{wildcards.sample}}.bam.bai"
+
+
+rule bcftools_call:
+    input:
+        fa=f"{base}/genome/genome.fa",
+        bam=expand(f"{results}/sorted_reads/{{sample}}.bam", sample=SAMPLES),
+        bai=expand(f"{results}/sorted_reads/{{sample}}.bam.bai", sample=SAMPLES),
+    output:
+        f"{results}/calls/all.vcf",
+    shell:
+        f"mkdir -p {results}/calls && touch {results}/calls/all.vcf"
+
+
+rule plot_quals:
+    input:
+        f"{results}/calls/all.vcf",
+    output:
+        f"{results}/plots/quals.svg",
+    shell:
+        f"mkdir -p {results}/plots && echo 'abcdefg' > {results}/plots/quals.svg"
