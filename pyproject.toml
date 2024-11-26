@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "snakemake-executor-plugin-latch"
-version = "0.1.2"
+version = "0.1.4"
 description = ""
 authors = ["Ayush Kamat <ayush@latch.bio>"]
 readme = "README.md"

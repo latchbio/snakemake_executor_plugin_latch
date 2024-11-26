@@ -35,14 +35,13 @@ common_settings = CommonSettings(
     pass_envvar_declarations_to_cmd=True,
     # whether the default storage provider shall be deployed before the job is run on
     # the remote node. Usually set to True if the executor does not assume a shared fs
-    auto_deploy_default_storage_provider=True,
+    auto_deploy_default_storage_provider=False,
     # specify initial amount of seconds to sleep before checking for job status
     init_seconds_before_status_checks=0,
 )
 
 
-class AuthenticationError(RuntimeError):
-    ...
+class AuthenticationError(RuntimeError): ...
 
 
 expr = re.compile(r"^(([a-zA-Z]+)://)?(?P<uri>[^/]+.*)$")
@@ -166,11 +165,13 @@ class Executor(RemoteExecutor):
         rule = next(x for x in job.rules)
 
         job_exec = self.format_job_exec(job)
-        job_exec += " --quiet all"
 
         # strip leading python3 -m bc path to python is absolute in the runtime task and not
         # necessarily available to the job machine
         command = job_exec.split()[2:]
+
+        if "--quiet" not in command:
+            command.extend(["--quiet", "all"])
 
         image: Optional[str] = getattr(job, "container_img_url")
         if image is None:
