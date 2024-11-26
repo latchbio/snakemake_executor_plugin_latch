@@ -41,7 +41,8 @@ common_settings = CommonSettings(
 )
 
 
-class AuthenticationError(RuntimeError): ...
+class AuthenticationError(RuntimeError):
+    ...
 
 
 expr = re.compile(r"^(([a-zA-Z]+)://)?(?P<uri>[^/]+.*)$")
@@ -165,6 +166,7 @@ class Executor(RemoteExecutor):
         rule = next(x for x in job.rules)
 
         job_exec = self.format_job_exec(job)
+        job_exec += " --quiet all"
 
         # strip leading python3 -m bc path to python is absolute in the runtime task and not
         # necessarily available to the job machine
