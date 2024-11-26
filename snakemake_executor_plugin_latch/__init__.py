@@ -1,10 +1,12 @@
 import os
 import re
+from dataclasses import dataclass
 from typing import AsyncGenerator, List, Optional, Set
 
 import gql
 from gql.transport.aiohttp import AIOHTTPTransport
 from gql.transport.requests import RequestsHTTPTransport
+from humanfriendly import parse_size
 from snakemake_interface_executor_plugins.executors.base import SubmittedJobInfo
 from snakemake_interface_executor_plugins.executors.remote import RemoteExecutor
 from snakemake_interface_executor_plugins.jobs import JobExecutorInterface
@@ -51,6 +53,53 @@ def sanitize_image_name(image: str) -> str:
         raise ValueError(f"malformed image name: {image}")
 
     return match["uri"]
+
+
+@dataclass
+class Resources:
+    cpu: int = 2000  # millicores
+    mem: int = 4 * 1024**3  # bytes
+    disk: int = 500 * 1024**3  # bytes
+    gpus: int = 0
+    gpu_type: Optional[str] = None
+
+
+resource_key_expr = re.compile(r"^(?P<type>mem|disk)_(?P<unit>\w+)$")
+
+
+def get_resources(resources: dict[str, str]):
+    res = Resources()
+
+    for key, val in resources.items():
+        if key.startswith("cpu"):
+            if isinstance(val, int):
+                res.cpu = val * 1000
+            elif isinstance(val, str):
+                if val.endswith("m"):
+                    res.cpu = parse_size(val.strip("m"))
+                else:
+                    res.cpu = parse_size(val) * 1000
+
+            continue
+
+        match = resource_key_expr.match(key)
+        if match is not None:
+            unit = match["unit"]
+            multiplier = parse_size(f"1 {unit}")
+
+            setattr(res, match["type"], int(val) * multiplier)
+
+            continue
+
+        if key == "gpu" or key == "gpus":
+            res.gpus = int(val)
+
+        if key == "gpu_type":
+            res.gpu_type = val
+
+    # todo(ayush): do some validation here
+
+    return res
 
 
 # Required:
@@ -133,16 +182,9 @@ class Executor(RemoteExecutor):
 
         image = sanitize_image_name(image)
 
-        cpu = int(float(job.resources["_cores"]) * 1000)
-        # default 512 MiB
-        ram = int(float(job.resources.get("mem_mib", 512)) * 1024 * 1024)
-        # default 512 GiB
-        disk = int(float(job.resources.get("disk_mib", 512 * 1024)) * 1024 * 1024)
+        resources = get_resources(job.resources)
 
-        gpus = int(job.resources.get("gpu", 0))
-        gpu_type = job.resources.get("gpu_type")
-
-        if gpus > 0 and gpu_type is None:
+        if resources.gpus > 0 and resources.gpu_type is None:
             raise ValueError(
                 f"{rule} - {job.jobid}: rule that requests gpus must also specify a gpu type"
             )
@@ -195,11 +237,11 @@ class Executor(RemoteExecutor):
                 "argJobId": job.jobid,
                 "argCommand": command,
                 "argImage": image,
-                "argCpuLimitMillicores": cpu,
-                "argMemoryLimitBytes": ram,
-                "argEphemeralStorageLimitBytes": disk,
-                "argGpuLimit": gpus,
-                "argGpuType": gpu_type,
+                "argCpuLimitMillicores": resources.cpu,
+                "argMemoryLimitBytes": resources.mem,
+                "argEphemeralStorageLimitBytes": resources.disk,
+                "argGpuLimit": resources.gpus,
+                "argGpuType": resources.gpu_type,
                 "argParentJobIds": list(upstream),
                 "argAttempt": job.attempt,
             },
