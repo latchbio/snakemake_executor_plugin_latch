@@ -1,16 +1,20 @@
 import os
-import re
-from dataclasses import dataclass
 from typing import AsyncGenerator, List, Optional, Set
 
 import gql
 from gql.transport.aiohttp import AIOHTTPTransport
 from gql.transport.requests import RequestsHTTPTransport
-from humanfriendly import parse_size
 from snakemake_interface_executor_plugins.executors.base import SubmittedJobInfo
 from snakemake_interface_executor_plugins.executors.remote import RemoteExecutor
 from snakemake_interface_executor_plugins.jobs import JobExecutorInterface
 from snakemake_interface_executor_plugins.settings import CommonSettings
+
+from .resource_utils import (
+    get_resources,
+    sanitize_image_name,
+    validate_and_pin_gpu_resources,
+    validate_resource_limits,
+)
 
 # Required:
 # Specify common settings shared by various executors.
@@ -24,11 +28,11 @@ common_settings = CommonSettings(
     # Whether the executor implies to not have a shared file system
     implies_no_shared_fs=False,  # -- we will be using OFS
     # whether to deploy workflow sources to default storage provider before execution
-    job_deploy_sources=True,  # todo(ayush): is this necessary
+    job_deploy_sources=False,
     # whether arguments for setting the storage provider shall be passed to jobs
     pass_default_storage_provider_args=True,
     # whether arguments for setting default resources shall be passed to jobs
-    pass_default_resources_args=True,
+    pass_default_resources_args=False,
     # whether environment variables shall be passed to jobs (if False, use
     # self.envvars() to obtain a dict of environment variables and their values
     # and pass them e.g. as secrets to the execution backend)
@@ -42,64 +46,6 @@ common_settings = CommonSettings(
 
 
 class AuthenticationError(RuntimeError): ...
-
-
-expr = re.compile(r"^(([a-zA-Z]+)://)?(?P<uri>[^/]+.*)$")
-
-
-def sanitize_image_name(image: str) -> str:
-    match = expr.match(image)
-    if match is None:
-        raise ValueError(f"malformed image name: {image}")
-
-    return match["uri"]
-
-
-@dataclass
-class Resources:
-    cpu: int = 2000  # millicores
-    mem: int = 4 * 1024**3  # bytes
-    disk: int = 500 * 1024**3  # bytes
-    gpus: int = 0
-    gpu_type: Optional[str] = None
-
-
-resource_key_expr = re.compile(r"^(?P<type>mem|disk)_(?P<unit>\w+)$")
-
-
-def get_resources(resources: dict[str, str]):
-    res = Resources()
-
-    for key, val in resources.items():
-        if key.startswith("cpu"):
-            if isinstance(val, int):
-                res.cpu = val * 1000
-            elif isinstance(val, str):
-                if val.endswith("m"):
-                    res.cpu = parse_size(val.strip("m"))
-                else:
-                    res.cpu = parse_size(val) * 1000
-
-            continue
-
-        match = resource_key_expr.match(key)
-        if match is not None:
-            unit = match["unit"]
-            multiplier = parse_size(f"1 {unit}")
-
-            setattr(res, match["type"], int(val) * multiplier)
-
-            continue
-
-        if key == "gpu" or key == "gpus":
-            res.gpus = int(val)
-
-        if key == "gpu_type":
-            res.gpu_type = val
-
-    # todo(ayush): do some validation here
-
-    return res
 
 
 # Required:
@@ -152,16 +98,6 @@ class Executor(RemoteExecutor):
         )
 
     def run_job(self, job: JobExecutorInterface):
-        # Implement here how to run a job.
-        # You can access the job's resources, etc.
-        # via the job object.
-        # After submitting the job, you have to call
-        # self.report_job_submission(job_info).
-        # with job_info being of type
-        # snakemake_interface_executor_plugins.executors.base.SubmittedJobInfo.
-        # If required, make sure to pass the job's id to the job_info object, as keyword
-        # argument 'external_job_id'.
-
         rule = next(x for x in job.rules)
 
         job_exec = self.format_job_exec(job)
@@ -186,6 +122,20 @@ class Executor(RemoteExecutor):
         image = sanitize_image_name(image)
 
         resources = get_resources(job.resources)
+
+        if resources.gpu_type is not None:
+            if resources.gpus == 0:
+                self.logger.info(
+                    f"Ignoring `gpu_type` resource on rule {rule} as it requests 0 GPUs"
+                )
+                resources.gpu_type = None
+            else:
+                resources = validate_and_pin_gpu_resources(resources)
+                self.logger.info(
+                    f"As `gpu_type` is provided and `gpus` > 0, resources have been overridden to {resources}"
+                )
+
+        validate_resource_limits(resources)
 
         if resources.gpus > 0 and resources.gpu_type is None:
             raise ValueError(
@@ -255,28 +205,6 @@ class Executor(RemoteExecutor):
     async def check_active_jobs(
         self, active_jobs: List[SubmittedJobInfo]
     ) -> AsyncGenerator[SubmittedJobInfo, None]:
-        # Check the status of active jobs.
-
-        # You have to iterate over the given list active_jobs.
-        # If you provided it above, each will have its external_jobid set according
-        # to the information you provided at submission time.
-        # For jobs that have finished successfully, you have to call
-        # self.report_job_success(active_job).
-        # For jobs that have errored, you have to call
-        # self.report_job_error(active_job).
-        # This will also take care of providing a proper error message.
-        # Usually there is no need to perform additional logging here.
-        # Jobs that are still running have to be yielded.
-        #
-        # For queries to the remote middleware, please use
-        # self.status_rate_limiter like this:
-        #
-        # async with self.status_rate_limiter:
-        #    # query remote middleware here
-        #
-        # To modify the time until the next call of this method,
-        # you can set self.next_sleep_seconds here.
-
         job_infos_by_id = {x.job.jobid: x for x in active_jobs}
 
         statuses = (
