@@ -75,10 +75,10 @@ class Executor(RemoteExecutor):
         auth_header: Optional[str] = None
 
         self.execution_token = os.environ.get("FLYTE_INTERNAL_EXECUTION_ID", "")
-        if self.execution_token == "":
-            raise AuthenticationError(
-                "Unable to find credentials to connect to gql server, aborting"
-            )
+        # if self.execution_token == "":
+        #     raise AuthenticationError(
+        #         "Unable to find credentials to connect to gql server, aborting"
+        #     )
 
         auth_header = f"Latch-Execution-Token {self.execution_token}"
 

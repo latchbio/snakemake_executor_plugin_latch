@@ -27,28 +27,14 @@ class Resources:
         return ", ".join(
             [
                 f"{self.cpu / 1000:.3g} CPUs",
-                f"{format_size(self.mem)} RAM",
-                f"{format_size(self.disk)} Storage",
+                f"{format_size(self.mem, binary=True)} RAM",
+                f"{format_size(self.disk, binary=True)} Storage",
                 *(
                     [f"{self.gpus} {self.gpu_type} GPU(s)"]
                     if self.gpus > 0 and self.gpu_type is not None
                     else []
                 ),
             ]
-        )
-
-    def __eq__(self, other):
-        if not isinstance(other, Resources):
-            raise TypeError(
-                f"'=' not supported between instances of '{type(self)}' and '{type(other)}'"
-            )
-
-        return (
-            self.cpu == other.cpu
-            and self.mem == other.mem
-            and self.disk == other.disk
-            and self.gpus == other.gpus
-            and self.gpu_type == other.gpu_type
         )
 
     def __le__(self, other):
@@ -134,8 +120,16 @@ _resource_key_expr = re.compile(r"^(?P<type>mem|disk)(?:_(?P<unit>\w+))?$")
 def get_resources(resources: dict[str, str]) -> Resources:
     res = Resources()
 
+    written = {
+        "cpu": False,
+        "mem": False,
+        "disk": False,
+        "gpus": False,
+        "gpu_type": False,
+    }
+
     for key, val in resources.items():
-        if key.startswith("cpu"):
+        if not written["cpu"] and key.startswith("cpu") or key.startswith("core"):
             if isinstance(val, int):
                 res.cpu = val * 1000
             elif isinstance(val, str):
@@ -144,10 +138,14 @@ def get_resources(resources: dict[str, str]) -> Resources:
                 else:
                     res.cpu = parse_size(val) * 1000
 
+            written["cpu"] = True
             continue
 
         match = _resource_key_expr.match(key)
         if match is not None:
+            if written[match["type"]]:
+                continue
+
             unit = match["unit"]
             if unit is not None:
                 multiplier = parse_size(f"1 {unit}")
@@ -156,14 +154,16 @@ def get_resources(resources: dict[str, str]) -> Resources:
                 in_bytes = parse_size(val)
 
             setattr(res, match["type"], in_bytes)
-
+            written[match["type"]] = True
             continue
 
-        if key == "gpu" or key == "gpus":
+        if not written["gpus"] and key == "gpu" or key == "gpus":
             res.gpus = int(val)
+            written["gpus"] = True
 
-        if key == "gpu_type":
+        if not written["gpu_type"] and key == "gpu_type":
             res.gpu_type = val
+            written["gpu_type"] = True
 
     return res
 
