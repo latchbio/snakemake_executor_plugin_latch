@@ -109,20 +109,11 @@ class Executor(RemoteExecutor):
         if "--quiet" not in command:
             command.extend(["--quiet", "all"])
 
-        image: Optional[str] = getattr(job, "container_img_url")
-        if image is None:
-            image = job.resources.get("container")
-        if image is None:
-            image = getattr(self.workflow.remote_execution_settings, "container_image")
-        if image is None:
-            raise ValueError(
-                f"{rule} - {job.jobid}: rule must have a container image configured to run on latch"
-            )
-
+        image = os.environ.get("FLYTE_INTERNAL_IMAGE")  # always set during register
+        image = job.resources.get("container", image)
         image = sanitize_image_name(image)
 
         resources = get_resources(job.resources)
-
         if resources.gpu_type is not None:
             if resources.gpus == 0:
                 self.logger.info(
