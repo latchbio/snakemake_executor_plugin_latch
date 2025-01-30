@@ -106,7 +106,10 @@ class Executor(RemoteExecutor):
         # necessarily available to the job machine
         command = job_exec.split()[2:]
 
-        if "--quiet" not in command:
+        if (
+            os.environ.get("LATCH_VERBOSE_RULE_OUTPUT") is None
+            and "--quiet" not in command
+        ):
             command.extend(["--quiet", "all"])
 
         image = os.environ.get("FLYTE_INTERNAL_IMAGE")  # always set during register
