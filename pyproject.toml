@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "snakemake-executor-plugin-latch"
-version = "0.1.2"
+version = "0.1.6"
 description = ""
 authors = ["Ayush Kamat <ayush@latch.bio>"]
 readme = "README.md"
@@ -12,6 +12,7 @@ python-dateutil = "^2.9.0.post0"
 requests-toolbelt = "^1.0.0"
 snakemake-interface-executor-plugins = "^9.3.2"
 aiohttp = "^3.10.10"
+humanfriendly = "^10.0"
 
 [tool.poetry.group.dev.dependencies]
 ruff = "^0.7.0"

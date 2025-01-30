@@ -1,5 +1,4 @@
 import os
-import re
 from typing import AsyncGenerator, List, Optional, Set
 
 import gql
@@ -9,6 +8,13 @@ from snakemake_interface_executor_plugins.executors.base import SubmittedJobInfo
 from snakemake_interface_executor_plugins.executors.remote import RemoteExecutor
 from snakemake_interface_executor_plugins.jobs import JobExecutorInterface
 from snakemake_interface_executor_plugins.settings import CommonSettings
+
+from .resource_utils import (
+    get_resources,
+    sanitize_image_name,
+    validate_and_pin_gpu_resources,
+    validate_resource_limits,
+)
 
 # Required:
 # Specify common settings shared by various executors.
@@ -22,36 +28,24 @@ common_settings = CommonSettings(
     # Whether the executor implies to not have a shared file system
     implies_no_shared_fs=False,  # -- we will be using OFS
     # whether to deploy workflow sources to default storage provider before execution
-    job_deploy_sources=True,  # todo(ayush): is this necessary
+    job_deploy_sources=False,
     # whether arguments for setting the storage provider shall be passed to jobs
     pass_default_storage_provider_args=True,
     # whether arguments for setting default resources shall be passed to jobs
-    pass_default_resources_args=True,
+    pass_default_resources_args=False,
     # whether environment variables shall be passed to jobs (if False, use
     # self.envvars() to obtain a dict of environment variables and their values
     # and pass them e.g. as secrets to the execution backend)
     pass_envvar_declarations_to_cmd=True,
     # whether the default storage provider shall be deployed before the job is run on
     # the remote node. Usually set to True if the executor does not assume a shared fs
-    auto_deploy_default_storage_provider=True,
+    auto_deploy_default_storage_provider=False,
     # specify initial amount of seconds to sleep before checking for job status
     init_seconds_before_status_checks=0,
 )
 
 
-class AuthenticationError(RuntimeError):
-    ...
-
-
-expr = re.compile(r"^(([a-zA-Z]+)://)?(?P<uri>[^/]+.*)$")
-
-
-def sanitize_image_name(image: str) -> str:
-    match = expr.match(image)
-    if match is None:
-        raise ValueError(f"malformed image name: {image}")
-
-    return match["uri"]
+class AuthenticationError(RuntimeError): ...
 
 
 # Required:
@@ -104,47 +98,37 @@ class Executor(RemoteExecutor):
         )
 
     def run_job(self, job: JobExecutorInterface):
-        # Implement here how to run a job.
-        # You can access the job's resources, etc.
-        # via the job object.
-        # After submitting the job, you have to call
-        # self.report_job_submission(job_info).
-        # with job_info being of type
-        # snakemake_interface_executor_plugins.executors.base.SubmittedJobInfo.
-        # If required, make sure to pass the job's id to the job_info object, as keyword
-        # argument 'external_job_id'.
-
         rule = next(x for x in job.rules)
 
         job_exec = self.format_job_exec(job)
-        job_exec += " --quiet all"
 
         # strip leading python3 -m bc path to python is absolute in the runtime task and not
         # necessarily available to the job machine
         command = job_exec.split()[2:]
 
-        image: Optional[str] = getattr(job, "container_img_url")
-        if image is None:
-            image = job.resources.get("container")
-        if image is None:
-            image = getattr(self.workflow.remote_execution_settings, "container_image")
-        if image is None:
-            raise ValueError(
-                f"{rule} - {job.jobid}: rule must have a container image configured to run on latch"
-            )
+        if "--quiet" not in command:
+            command.extend(["--quiet", "all"])
 
+        image = os.environ.get("FLYTE_INTERNAL_IMAGE")  # always set during register
+        image = job.resources.get("container", image)
         image = sanitize_image_name(image)
 
-        cpu = int(float(job.resources["_cores"]) * 1000)
-        # default 512 MiB
-        ram = int(float(job.resources.get("mem_mib", 512)) * 1024 * 1024)
-        # default 512 GiB
-        disk = int(float(job.resources.get("disk_mib", 512 * 1024)) * 1024 * 1024)
+        resources = get_resources(job.resources)
+        if resources.gpu_type is not None:
+            if resources.gpus == 0:
+                self.logger.info(
+                    f"Ignoring `gpu_type` resource on rule {rule} as it requests 0 GPUs"
+                )
+                resources.gpu_type = None
+            else:
+                resources = validate_and_pin_gpu_resources(resources)
+                self.logger.info(
+                    f"As `gpu_type` is provided and `gpus` > 0, resources have been overridden to {resources}"
+                )
 
-        gpus = int(job.resources.get("gpu", 0))
-        gpu_type = job.resources.get("gpu_type")
+        validate_resource_limits(resources)
 
-        if gpus > 0 and gpu_type is None:
+        if resources.gpus > 0 and resources.gpu_type is None:
             raise ValueError(
                 f"{rule} - {job.jobid}: rule that requests gpus must also specify a gpu type"
             )
@@ -197,11 +181,11 @@ class Executor(RemoteExecutor):
                 "argJobId": job.jobid,
                 "argCommand": command,
                 "argImage": image,
-                "argCpuLimitMillicores": cpu,
-                "argMemoryLimitBytes": ram,
-                "argEphemeralStorageLimitBytes": disk,
-                "argGpuLimit": gpus,
-                "argGpuType": gpu_type,
+                "argCpuLimitMillicores": resources.cpu,
+                "argMemoryLimitBytes": resources.mem,
+                "argEphemeralStorageLimitBytes": resources.disk,
+                "argGpuLimit": resources.gpus,
+                "argGpuType": resources.gpu_type,
                 "argParentJobIds": list(upstream),
                 "argAttempt": job.attempt,
             },
@@ -212,28 +196,6 @@ class Executor(RemoteExecutor):
     async def check_active_jobs(
         self, active_jobs: List[SubmittedJobInfo]
     ) -> AsyncGenerator[SubmittedJobInfo, None]:
-        # Check the status of active jobs.
-
-        # You have to iterate over the given list active_jobs.
-        # If you provided it above, each will have its external_jobid set according
-        # to the information you provided at submission time.
-        # For jobs that have finished successfully, you have to call
-        # self.report_job_success(active_job).
-        # For jobs that have errored, you have to call
-        # self.report_job_error(active_job).
-        # This will also take care of providing a proper error message.
-        # Usually there is no need to perform additional logging here.
-        # Jobs that are still running have to be yielded.
-        #
-        # For queries to the remote middleware, please use
-        # self.status_rate_limiter like this:
-        #
-        # async with self.status_rate_limiter:
-        #    # query remote middleware here
-        #
-        # To modify the time until the next call of this method,
-        # you can set self.next_sleep_seconds here.
-
         job_infos_by_id = {x.job.jobid: x for x in active_jobs}
 
         statuses = (
