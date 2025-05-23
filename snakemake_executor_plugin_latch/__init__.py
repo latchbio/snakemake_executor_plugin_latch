@@ -51,27 +51,14 @@ class AuthenticationError(RuntimeError): ...
 # Required:
 # Implementation of your executor
 class Executor(RemoteExecutor):
-    def __post_init__(self):
-        # access workflow
-        # self.workflow
-        # access executor specific settings
-        # self.workflow.execution_settings
-
-        # IMPORTANT: in your plugin, only access methods and properties of
-        # Snakemake objects (like Workflow, Persistence, etc.) that are
-        # defined in the interfaces found in the
-        # snakemake-interface-executor-plugins and the
-        # snakemake-interface-common package.
-        # Other parts of those objects are NOT guaranteed to remain
-        # stable across new releases.
-
-        # To ensure that the used interfaces are not changing, you should
-        # depend on these packages as >=a.b.c,<d with d=a+1 (i.e. pin the
-        # dependency on this package to be at least the version at time
-        # of development and less than the next major version which would
-        # introduce breaking changes).
-
-        # In case of errors outside of jobs, please raise a WorkflowError
+    def __init__(
+        self,
+        workflow,
+        logger,
+    ):
+        # note(ayush): despite the advice to put app-specific initialization logic in __post_init__,
+        # snakemake has a race condition where __post_init__ is sometimes called AFTER
+        # check_active_jobs, so that breaks. I'm monkey-patching __init__ instead
         auth_header: Optional[str] = None
 
         self.execution_token = os.environ.get("FLYTE_INTERNAL_EXECUTION_ID", "")
@@ -96,6 +83,8 @@ class Executor(RemoteExecutor):
                 url=url, headers={"Authorization": auth_header}, timeout=90
             )
         )
+
+        super().__init__(workflow, logger)
 
     def run_job(self, job: JobExecutorInterface):
         rule = next(x for x in job.rules)
